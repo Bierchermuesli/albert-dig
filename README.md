@@ -46,10 +46,10 @@ git clone https://github.com/Bierchermuesli/albert-dig.git ~/.local/share/albert
 
 
 # Bugs / Feedback
-PR and issues are always welcome, the code could be better I guess
+This was my first albert plugin. so be honest and submit any feedback or PR. 
 
-
-# ToDO:
+# ToDo:
  * [ ] Allow FQDN as `@ns1.example.com` as quering name server argument (only IP allowed now) 
+ * [ ] better use regex?
 
 
