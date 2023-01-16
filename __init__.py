@@ -5,7 +5,6 @@
 Synopsis: <trigger> {domain|ip addr} [TXT|AAAA|ANY...] [@1.2.3.4.]"""
 
 from albert import *
-
 import os
 from dns.resolver import NXDOMAIN, NoAnswer, Resolver, Timeout, NoNameservers
 import dns.reversename
@@ -13,17 +12,22 @@ import ipaddress
 import time
 # import re
 
-__title__ = "DNS"
-__version__ = "0.1.2"
-__triggers__ = "d "
-__authors__ = ["Stefan Grosser"]
-__py_deps__ = ["ipaddress","dnspython"]
+md_iid = "0.5"
+md_version = "1.3"
+md_id = "d"
+md_name = "DNS DIG"
+md_description = "dig - a dns lookup tool"
+md_license = "MIT"
+md_url = "https://github.com/Bierchermuesli/albert-dig"
+md_maintainers = "@Bierchermuesli"
+md_authors = "@Bierchermuesli"
+md_lib_dependencies = ["dnspython","ipaddress"]
+
 
 #default types
 valid_qtype_list=["A","AAAA","NS","MX","TXT","SOA","CNAME","SRV"]
 any_qtype_list=["A","AAAA","NS","MX"]
 default_qtype_list=["A","AAAA"]
-
 
 def is_ip(ip):
     try:
@@ -35,10 +39,19 @@ def is_ip(ip):
         return False
 
 
-def handleQuery(query):
-    if query.isTriggered:
-        results = []
-        items = []
+class Plugin(QueryHandler):   
+    
+    def id(self):
+        return md_id
+
+    def name(self):
+        return md_name
+
+    def description(self):
+        return md_description 
+
+    def handleQuery(self,query):
+    
         qtype=''
         qtype_list=[]
         qname=''
@@ -108,8 +121,6 @@ def handleQuery(query):
 
         """
         Do the query, collect output and generate fake DIG CLI outputs
-
-
         """
         digcli = []
         digclishort = []
@@ -136,7 +147,7 @@ def handleQuery(query):
                 debug("syntax Error for {} IN {}".format(qtype,qname))
                 error = "syntax Error"
 
-            digcli.append("; <<>> Albert-DIG {} <<>> {}\n".format(__version__,qname))
+            digcli.append("; <<>> Albert-DIG {} <<>> {}\n".format(md_version,qname))
             digcli.append(";; ->>HEADER<<- opcode: QUERY, status: {}\n".format(error))
             digcli.append(";; flags: qr rd ra; QUERY: 1, ANSWER: {}, AUTHORITY: 0, ADDITIONAL: 1\n\n".format(len(response)))
             digcli.append(";; QUESTION SECTION:\n;{}.\t\tIN\t{}\n\n".format(qname,qtype))
@@ -157,21 +168,20 @@ def handleQuery(query):
                 for i in response:
                     #prepare Action list
                     actions = [
-                    ClipAction("Copy {}".format(i), str(i)),
-                    ClipAction("Copy all dig output +short", str(''.join(digclishort))),
-                    ClipAction("Copy all dig output", str(''.join(digcli))),
+                    Action("clip","Copy {}".format(i), lambda: setClipboardText(str(i))),
+                    Action("clip","Copy all dig output +short", lambda: setClipboardText(str(''.join(digclishort)))),
+                    Action("clip","Copy all dig output", lambda: setClipboardText(str(''.join(digcli)))),
                     ]
                     if qtype == 'PTR':
-                        actions.extend([ClipAction("Copy {}".format(qname), str(qname))])
+                        actions.extend([Action("clip","Copy {}".format(qname), lambda: setClipboardText(str(qname)))])
 
                     #append a an item for each result             
-                    item = Item(
-                        icon = os.path.dirname(__file__)+"/ico/"+qtype.lower()+".svg",
+                    query.add(Item(id=md_id,
+                        icon = [os.path.dirname(__file__)+"/ico/"+qtype.lower()+".svg"],
                         text = str(i),  
                         subtext = "dig {0} {1} ".format(qname,qtype),
                         actions=actions
-                    )
-                    items.append(item)
+                    ))
             else:
                 #output for nxdomain etc...
                 digcli.append("{}\t\tIN\t{}\t\n".format(qname,qtype))
@@ -180,14 +190,13 @@ def handleQuery(query):
                 digcli.append(";; SERVER: {}#53\n".format(resolver.nameservers[0]))
 
                 digcli.append(";; WHEN: {}\n".format(time.ctime()))
-                items.append(Item(
-                    icon = os.path.dirname(__file__)+"/ico/error.svg",
+                query.add(Item(
+                    icon = [os.path.dirname(__file__)+"/ico/error.svg"],
                     text = str(error),  
                     subtext = "dig {0} {1} ".format(qname,qtype),
                     actions = [
-                        ClipAction("{}".format(error), str(error)),
-                            ClipAction("Copy dig output +short", str(''.join(digclishort))),
-                            ClipAction("Copy dig output", str(''.join(digcli))),
+                        Action("clip","{}".format(error), lambda: setClipboardText(str(error))),
+                            Action("clip","Copy dig output +short", lambda: setClipboardText(str(''.join(digclishort)))),
+                            Action("clip","Copy dig output", lambda: setClipboardText(str(''.join(digcli)))),
                         ]
                 ))
-        return items

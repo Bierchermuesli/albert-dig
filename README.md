@@ -17,7 +17,7 @@ have a look for 'Alt'-Key for advanced copy&paste Option e.g. PTR Domains or dig
 
 ```
 $> dig example.com A
-; <<>> Albert-DIG 0.1.2 <<>> example.com
+; <<>> Albert-DIG 1.3 <<>> example.com
 ;; ->>HEADER<<- opcode: QUERY, status: NOERROR
 ;; flags: qr rd ra; QUERY: 1, ANSWER: 1, AUTHORITY: 0, ADDITIONAL: 1
 
@@ -27,9 +27,10 @@ $> dig example.com A
 ;; ANSWER SECTION:
 example.com		IN	A	93.184.216.34
 
-;; Query time: 0.03 msec
+;; Query time: 0.02 msec
 ;; SERVER: 1.1.1.1#53)
-;; WHEN: Wed Apr 28 00:06:52 2021
+;; WHEN: Mon Jan 16 21:11:35 2023
+
 ```
 
 
@@ -41,7 +42,7 @@ example.com		IN	A	93.184.216.34
 
 Simple clone to Albert plugin dir and activate in Albert Python Modules
 ```
-git clone https://github.com/Bierchermuesli/albert-dig.git ~/.local/share/albert/org.albert.extension.python/modules/dig
+git clone https://github.com/Bierchermuesli/albert-dig.git /.local/share/albert/python/plugins/digmodules/dig
 ```
 
 
