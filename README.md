@@ -42,7 +42,7 @@ example.com		IN	A	93.184.216.34
 
 Simple clone to Albert plugin dir and activate in Albert Python Modules
 ```
-git clone git@github.com:Bierchermuesli/albert-dig.git ~/.local/share/albert/python/plugins/dig
+git clone https://github.com/Bierchermuesli/albert-dig.git ~/.local/share/albert/python/plugins/dig
 ```
 
 
