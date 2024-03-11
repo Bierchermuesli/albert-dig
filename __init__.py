@@ -12,8 +12,8 @@ import ipaddress
 import time
 # import re
 
-md_iid = "0.5"
-md_version = "1.3"
+md_iid = "2.1"
+md_version = "1.4"
 md_id = "d"
 md_name = "DNS DIG"
 md_description = "dig - a dns lookup tool"
@@ -39,18 +39,12 @@ def is_ip(ip):
         return False
 
 
-class Plugin(QueryHandler):   
+class Plugin(PluginInstance, GlobalQueryHandler):
+    def __init__(self):
+        GlobalQueryHandler.__init__(self, id=md_id, name=md_name, description=md_description, defaultTrigger="dig ", synopsis="{domain|ip addr} [TXT|AAAA|ANY...] [@1.2.3.4.]")
+        PluginInstance.__init__(self, extensions=[self])
     
-    def id(self):
-        return md_id
-
-    def name(self):
-        return md_name
-
-    def description(self):
-        return md_description 
-
-    def handleQuery(self,query):
+    def handleTriggerQuery(self,query):
     
         qtype=''
         qtype_list=[]
@@ -85,8 +79,10 @@ class Plugin(QueryHandler):
                     resolver.nameservers = [qstring[2][1:]]
                     debug("we ask this resolver:"+qstring[2][1:])
         # <triger> example.com
-        else:
+        elif len(qstring):
             qname = qstring[0] 
+        else:
+            qname =''
 
         """
         try to sort qname as quick as possible and limit unnessessary queries (e.g. max 6 levels. needs a tld etc..)
@@ -124,16 +120,17 @@ class Plugin(QueryHandler):
         """
         digcli = []
         digclishort = []
-        error = 'NOERROR'
-        start_time = time.time()
         for qtype in qtype_list:
+            error = 'NOERROR'
+            start_time = time.time()
+            response=[]
             debug("dig {0} {1} ".format(qname,qtype))
 
             digclishort.append("\n$> dig {0} {1} +short\n".format(qname,qtype))
             digcli.append("\n$> dig {0} {1}\n".format(qname,qtype))
             
             try:
-                response = resolver.query(qname,qtype)
+                response = resolver.resolve(qname,qtype)
             except NXDOMAIN:
                 debug("NXDOMAIN for {} IN {}".format(qtype,qname))
                 error = "NXDOMAIN"
@@ -146,10 +143,13 @@ class Plugin(QueryHandler):
             except dns.exception.SyntaxError:
                 debug("syntax Error for {} IN {}".format(qtype,qname))
                 error = "syntax Error"
-
+            except NoNameservers as e:
+                debug(f"{e}")
+                error = str(e)
+        
             digcli.append("; <<>> Albert-DIG {} <<>> {}\n".format(md_version,qname))
             digcli.append(";; ->>HEADER<<- opcode: QUERY, status: {}\n".format(error))
-            digcli.append(";; flags: qr rd ra; QUERY: 1, ANSWER: {}, AUTHORITY: 0, ADDITIONAL: 1\n\n".format(len(response)))
+            digcli.append(";; flags: qr rd ra; QUERY: 1, ANSWER: {}, AUTHORITY: 0, ADDITIONAL: 0\n\n".format(len(response)))
             digcli.append(";; QUESTION SECTION:\n;{}.\t\tIN\t{}\n\n".format(qname,qtype))
             
             debug("{0} {1} records {2}.".format(qtype,qname,len(response)))
@@ -176,8 +176,8 @@ class Plugin(QueryHandler):
                         actions.extend([Action("clip","Copy {}".format(qname), lambda: setClipboardText(str(qname)))])
 
                     #append a an item for each result             
-                    query.add(Item(id=md_id,
-                        icon = [os.path.dirname(__file__)+"/ico/"+qtype.lower()+".svg"],
+                    query.add(StandardItem(id=md_id,
+                        iconUrls = [os.path.dirname(__file__)+"/ico/"+qtype.lower()+".svg"],
                         text = str(i),  
                         subtext = "dig {0} {1} ".format(qname,qtype),
                         actions=actions
@@ -190,8 +190,8 @@ class Plugin(QueryHandler):
                 digcli.append(";; SERVER: {}#53\n".format(resolver.nameservers[0]))
 
                 digcli.append(";; WHEN: {}\n".format(time.ctime()))
-                query.add(Item(
-                    icon = [os.path.dirname(__file__)+"/ico/error.svg"],
+                query.add(StandardItem(
+                    iconUrls = [os.path.dirname(__file__)+"/ico/error.svg"],
                     text = str(error),  
                     subtext = "dig {0} {1} ".format(qname,qtype),
                     actions = [
