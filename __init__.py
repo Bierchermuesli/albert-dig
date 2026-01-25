@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*- 
 
 """runs DIG-like DNS Queries (and fake DIG output for your sophisticated mails / ticketing system)
 
@@ -32,7 +32,7 @@ def is_ip(address: str) -> bool:
     except ValueError:
         return False
 
-class Plugin(PluginInstance, TriggerQueryHandler):
+class Plugin(PluginInstance, GeneratorQueryHandler):
     # --- private attributes
     _resolver_timeout = 1.0
     _resolver_lifetime = 1.0
@@ -40,7 +40,7 @@ class Plugin(PluginInstance, TriggerQueryHandler):
     _any_qtypes = "A,AAAA,NS,MX"
 
     def __init__(self):
-        TriggerQueryHandler.__init__(self)
+        GeneratorQueryHandler.__init__(self)
         PluginInstance.__init__(self)
         self.icon_path = Path(__file__).parent / "ico"
         self._init_configuration()
@@ -232,8 +232,8 @@ class Plugin(PluginInstance, TriggerQueryHandler):
 
         return answers, error, "".join(dig_full), "".join(dig_short)
 
-    def handleTriggerQuery(self, query):
-        qname, qtype_arg, resolver_addr = self._parse_query(query.string)
+    def items(self, ctx):
+        qname, qtype_arg, resolver_addr = self._parse_query(ctx.query)
 
         if not qname:
             return
@@ -242,12 +242,12 @@ class Plugin(PluginInstance, TriggerQueryHandler):
         if not qtype_list:
             # Handle cases where build_qtype_list returns empty (invalid domain)
             if not is_ip(qname): # Avoid showing this for IPs that are being reversed
-                 query.add(StandardItem(
+                 yield [StandardItem(
                     id=md_name,
-                    icon_factory=lambda: makeImageIcon(str(self.icon_path / "error.svg")),
+                    icon_factory=lambda: Icon.image(self.icon_path / "error.svg"),
                     text="Invalid query",
                     subtext=f"'{qname}' is not a valid domain or IP address."
-                ))
+                )]
             return
 
         resolver = Resolver()
@@ -283,7 +283,7 @@ class Plugin(PluginInstance, TriggerQueryHandler):
                         id=md_name,
                         text=str(answer),
                         subtext=f"dig {qname} {qtype}",
-                        icon_factory=lambda file=icon_file: makeImageIcon(str(file)),
+                        icon_factory=lambda file=icon_file: Icon.image(file),
                         actions=item_actions
                     ))
             else:
@@ -291,7 +291,7 @@ class Plugin(PluginInstance, TriggerQueryHandler):
                     id=md_name,
                     text=error,
                     subtext=f"dig {qname} {qtype}",
-                    icon_factory=lambda: makeImageIcon(str(self.icon_path / "error.svg")),
+                    icon_factory=lambda: Icon.image(self.icon_path / "error.svg"),
                     actions=actions
                 ))
-        query.add(items)
+        yield items
