@@ -5,198 +5,293 @@
 Synopsis: <trigger> {domain|ip addr} [TXT|AAAA|ANY...] [@1.2.3.4.]"""
 
 from albert import *
-import os
+from pathlib import Path
 from dns.resolver import NXDOMAIN, NoAnswer, Resolver, Timeout, NoNameservers
 import dns.reversename
 import ipaddress
 import time
-# import re
 
-md_iid = "2.1"
-md_version = "1.4"
-md_id = "d"
+md_iid = "5.0"
+md_version = "2.1"
 md_name = "DNS DIG"
 md_description = "dig - a dns lookup tool"
 md_license = "MIT"
 md_url = "https://github.com/Bierchermuesli/albert-dig"
-md_maintainers = "@Bierchermuesli"
-md_authors = "@Bierchermuesli"
-md_lib_dependencies = ["dnspython","ipaddress"]
+md_maintainers = ["@Bierchermuesli"]
+md_authors = ["@Bierchermuesli"]
+md_lib_dependencies = ["dnspython"]
 
+# default types
+VALID_QTYPES = ["A", "AAAA", "NS", "MX", "TXT", "SOA", "CNAME", "SRV", "HTTPS"]
 
-#default types
-valid_qtype_list=["A","AAAA","NS","MX","TXT","SOA","CNAME","SRV"]
-any_qtype_list=["A","AAAA","NS","MX"]
-default_qtype_list=["A","AAAA"]
-
-def is_ip(ip):
+def is_ip(address: str) -> bool:
+    """Checks if a string is a valid IP address."""
     try:
-        ip = ipaddress.ip_address(ip)
+        ipaddress.ip_address(address)
         return True
     except ValueError:
         return False
-    except:
-        return False
 
+class Plugin(PluginInstance, TriggerQueryHandler):
+    # --- private attributes
+    _resolver_timeout = 1.0
+    _resolver_lifetime = 1.0
+    _default_qtypes = "A,AAAA"
+    _any_qtypes = "A,AAAA,NS,MX"
 
-class Plugin(PluginInstance, GlobalQueryHandler):
     def __init__(self):
-        GlobalQueryHandler.__init__(self, id=md_id, name=md_name, description=md_description, defaultTrigger="dig ", synopsis="{domain|ip addr} [TXT|AAAA|ANY...] [@1.2.3.4.]")
-        PluginInstance.__init__(self, extensions=[self])
+        TriggerQueryHandler.__init__(self)
+        PluginInstance.__init__(self)
+        self.icon_path = Path(__file__).parent / "ico"
+        self._init_configuration()
+
+    # --- properties for settings
+    @property
+    def resolver_timeout(self):
+        return self._resolver_timeout
+
+    @resolver_timeout.setter
+    def resolver_timeout(self, value):
+        self._resolver_timeout = value
+        self.writeConfig("resolver_timeout", value)
+
+    @property
+    def resolver_lifetime(self):
+        return self._resolver_lifetime
+
+    @resolver_lifetime.setter
+    def resolver_lifetime(self, value):
+        self._resolver_lifetime = value
+        self.writeConfig("resolver_lifetime", value)
+
+    @property
+    def default_qtypes(self):
+        return self._default_qtypes
+
+    @default_qtypes.setter
+    def default_qtypes(self, value):
+        self._default_qtypes = value
+        self.writeConfig("default_qtypes", value)
     
-    def handleTriggerQuery(self,query):
+    @property
+    def any_qtypes(self):
+        return self._any_qtypes
+
+    @any_qtypes.setter
+    def any_qtypes(self, value):
+        self._any_qtypes = value
+        self.writeConfig("any_qtypes", value)
+
+    def _init_configuration(self):
+        """Load settings from config file or set defaults."""
+        for key, type, default in [
+            ("resolver_timeout", float, self._resolver_timeout),
+            ("resolver_lifetime", float, self._resolver_lifetime),
+            ("default_qtypes", str, self._default_qtypes),
+            ("any_qtypes", str, self._any_qtypes),
+        ]:
+            conf = self.readConfig(key, type)
+            if conf is None:
+                self.writeConfig(key, default)
+            else:
+                setattr(self, f"_{key}", conf)
+
+    def configWidget(self):
+        return [
+            {
+                "type": "label",
+                "text": "This plugin provides a simple DIG-like DNS query interface."
+            },
+            {
+                "type": "doublespinbox",
+                "label": "Resolver Timeout (seconds)",
+                "property": "resolver_timeout",
+                "widget_properties": {"minimum": 0.1, "maximum": 5.0, "singleStep": 0.1}
+            },
+            {
+                "type": "doublespinbox",
+                "label": "Resolver Lifetime (seconds)",
+                "property": "resolver_lifetime",
+                "widget_properties": {"minimum": 0.1, "maximum": 10.0, "singleStep": 0.1}
+            },
+            {
+                "type": "lineedit",
+                "label": "Default Query Types",
+                "property": "default_qtypes",
+                "widget_properties": {"placeholderText": "e.g., A,AAAA"}
+            },
+            {
+                "type": "label",
+                "text": "Comma-separated list of DNS record types to query when none is specified."
+            },
+            {
+                "type": "lineedit",
+                "label": "Query Types for 'ANY'",
+                "property": "any_qtypes",
+                "widget_properties": {"placeholderText": "e.g., A,AAAA,NS,MX"}
+            },
+            {
+                "type": "label",
+                "text": "Comma-separated list of DNS record types to query when 'ANY' is specified."
+            }
+        ]
     
-        qtype=''
-        qtype_list=[]
-        qname=''
-        response=[]
+    def defaultTrigger(self):
+        return "dig "
+
+    def synopsis(self, query):
+        return "{domain|ip addr} [TXT|AAAA|ANY...] [@1.2.3.4.]"
+
+    def _parse_query(self, query_string: str):
+        """Parses the raw query string into qname, qtype, and resolver."""
+        qname = ''
+        qtype_arg = ''
+        resolver_addr = None
+
+        parts = query_string.split()
+        if not parts:
+            return None, None, None
+
+        qname = parts[0]
+        
+        for part in parts[1:]:
+            if part.startswith('@'):
+                addr = part[1:]
+                if is_ip(addr):
+                    resolver_addr = addr
+            else:
+                qtype_arg = part.upper()
+        
+        return qname, qtype_arg, resolver_addr
+
+    def _build_qtype_list(self, qname: str, qtype_arg: str):
+        """Determines the list of query types based on the arguments."""
+        if not qname:
+            return []
+
+        if is_ip(qname):
+            return ["PTR"]
+
+        if len(qname.split(".")) in range(1, 6) and qname.split('.')[-1].isalpha() and len(qname.split('.')[-1]) >= 2:
+            if not qtype_arg:
+                return [qt.strip() for qt in self.default_qtypes.split(',') if qt.strip()]
+            if qtype_arg == "ANY":
+                return [qt.strip() for qt in self.any_qtypes.split(',') if qt.strip()]
+            if qtype_arg in VALID_QTYPES:
+                return [qtype_arg]
+        
+        return [] # Return empty list for invalid qname patterns
+
+    def _run_query(self, qname: str, qtype: str, resolver: Resolver):
+        """Runs a single DNS query and returns the results and cli output."""
+        start_time = time.time()
+        error = 'NOERROR'
+        answers = []
+        
+        try:
+            answers = resolver.resolve(qname, qtype)
+        except NXDOMAIN:
+            error = "NXDOMAIN"
+        except NoAnswer:
+            error = "NoAnswer"
+        except Timeout:
+            error = "TIMEOUT"
+        except dns.exception.SyntaxError:
+            error = "Syntax Error"
+        except NoNameservers as e:
+            error = str(e)
+            
+        query_time = round((time.time() - start_time) * 1000)
+        server = resolver.nameservers[0] if resolver.nameservers else "N/A"
+        
+        dig_header = [
+            f"; <<>> Albert-DIG {md_version} <<>> {qname}",
+            f";; ->>HEADER<<- opcode: QUERY, status: {error}",
+            f";; flags: qr rd ra; QUERY: 1, ANSWER: {len(answers)}, AUTHORITY: 0, ADDITIONAL: 0\n",
+            f";; QUESTION SECTION:\n;{qname}.\t\tIN\t{qtype}\n"
+        ]
+        
+        dig_short = [f"\n$> dig {qname} {qtype} +short\n"]
+        dig_full = [f"\n$> dig {qname} {qtype}\n"] + dig_header
+        dig_full.append(";; ANSWER SECTION:")
+
+        if answers:
+            for answer in answers:
+                dig_full.append(f"{qname}.\t\tIN\t{qtype}\t{answer}")
+                dig_short.append(str(answer))
+        else:
+            dig_full.append(f";{qname}.\t\tIN\t{qtype}")
+            dig_short.append("<nothing>")
+
+        dig_footer = [
+            f"\n;; Query time: {query_time} msec",
+            f";; SERVER: {server}#53",
+            f";; WHEN: {time.ctime()}"
+        ]
+        dig_full.extend(dig_footer)
+
+        return answers, error, "".join(dig_full), "".join(dig_short)
+
+    def handleTriggerQuery(self, query):
+        qname, qtype_arg, resolver_addr = self._parse_query(query.string)
+
+        if not qname:
+            return
+
+        qtype_list = self._build_qtype_list(qname, qtype_arg)
+        if not qtype_list:
+            # Handle cases where build_qtype_list returns empty (invalid domain)
+            if not is_ip(qname): # Avoid showing this for IPs that are being reversed
+                 query.add(StandardItem(
+                    id=md_name,
+                    icon_factory=lambda: makeImageIcon(str(self.icon_path / "error.svg")),
+                    text="Invalid query",
+                    subtext=f"'{qname}' is not a valid domain or IP address."
+                ))
+            return
 
         resolver = Resolver()
-        resolver.timeout = 1
-        resolver.lifetime = 1
+        resolver.timeout = self.resolver_timeout
+        resolver.lifetime = self.resolver_lifetime
+        if resolver_addr:
+            resolver.nameservers = [resolver_addr]
 
-
-        """
-        try to find any query type flag or @ask-another-resolver option?
-        """
-        qstring = query.string.split()
-        # <triger> example.com AAAA
-        if len(qstring) == 2:
-            qname = qstring[0]        
-            
-            if qstring[1].startswith('@'):
-                if is_ip(qstring[1][1:]):
-                    resolver.nameservers = [qstring[1][1:]]
-                    debug("we ask this resolver:"+qstring[1][1:])
-            else:
-                qtype = qstring[1]
-        # <triger> example.com AAAA @1.2.3.4
-        elif len(qstring) == 3:
-            qname = qstring[0] 
-            qtype = qstring[1]
-            if qstring[2].startswith('@'):
-                if is_ip(qstring[2][1:]):
-                    resolver.nameservers = [qstring[2][1:]]
-                    debug("we ask this resolver:"+qstring[2][1:])
-        # <triger> example.com
-        elif len(qstring):
-            qname = qstring[0] 
-        else:
-            qname =''
-
-        """
-        try to sort qname as quick as possible and limit unnessessary queries (e.g. max 6 levels. needs a tld etc..)
-        regex might be an option but probably slower...
-        
-        finally check if it is a ip address at and set PTR Flags/in-arpa domain
-
-        """
-        if len(qname) not in range(3, 255):
-            debug("too short/Long")
-            pass
-        
-        elif len(qname.split(".")) in range(1,6) and qname.split('.')[-1].isalpha() and len(qname.split('.')[-1]) >= 2:
-            debug(qname+"-->  must be a host")
-            if not qtype:
-                qtype_list=default_qtype_list
-            elif qtype.upper() == "ANY":
-                qtype_list=any_qtype_list
-            elif qtype.upper() in valid_qtype_list:
-                qtype_list=[qtype.upper()]
-            else:
-                qtype_list=["A"]
-        elif is_ip(qname):
-            debug(qname+"-->  is a ip")
-            qtype_list=["PTR"]
+        # Handle reverse DNS
+        if "PTR" in qtype_list:
             qname = dns.reversename.from_address(qname)
-        else:
-            pass
-            debug("nothing")
 
-
-
-        """
-        Do the query, collect output and generate fake DIG CLI outputs
-        """
-        digcli = []
-        digclishort = []
+        items = []
         for qtype in qtype_list:
-            error = 'NOERROR'
-            start_time = time.time()
-            response=[]
-            debug("dig {0} {1} ".format(qname,qtype))
-
-            digclishort.append("\n$> dig {0} {1} +short\n".format(qname,qtype))
-            digcli.append("\n$> dig {0} {1}\n".format(qname,qtype))
+            answers, error, dig_full, dig_short = self._run_query(qname, qtype, resolver)
             
-            try:
-                response = resolver.resolve(qname,qtype)
-            except NXDOMAIN:
-                debug("NXDOMAIN for {} IN {}".format(qtype,qname))
-                error = "NXDOMAIN"
-            except NoAnswer:
-                debug("NoAnser for {} IN {}".format(qtype,qname))
-                error = "NoAnswer"
-            except Timeout:
-                debug("timeout for {} IN {}".format(qtype,qname))
-                error = "TIMEOUT"
-            except dns.exception.SyntaxError:
-                debug("syntax Error for {} IN {}".format(qtype,qname))
-                error = "syntax Error"
-            except NoNameservers as e:
-                debug(f"{e}")
-                error = str(e)
-        
-            digcli.append("; <<>> Albert-DIG {} <<>> {}\n".format(md_version,qname))
-            digcli.append(";; ->>HEADER<<- opcode: QUERY, status: {}\n".format(error))
-            digcli.append(";; flags: qr rd ra; QUERY: 1, ANSWER: {}, AUTHORITY: 0, ADDITIONAL: 0\n\n".format(len(response)))
-            digcli.append(";; QUESTION SECTION:\n;{}.\t\tIN\t{}\n\n".format(qname,qtype))
+            actions = [
+                Action("clip-short", "Copy dig output (+short)", lambda short=dig_short: setClipboardText(short)),
+                Action("clip-full", "Copy full dig output", lambda full=dig_full: setClipboardText(full)),
+            ]
             
-            debug("{0} {1} records {2}.".format(qtype,qname,len(response)))
-
-            digcli +=";; ANSWER SECTION:\n"
-            if len(response)>0:
-                for i in response:  
-                    #we want cli output for all responses... - therefore a dedicated loop
-                    digcli.append("{}\t\tIN\t{}\t{}\n".format(qname,qtype,i))
-                    digclishort.append("{}".format(i))
-
-                digcli.append("\n;; Query time: {} msec\n".format(round(time.time() - start_time,2)))
-                digcli.append(";; SERVER: {}#53)\n".format(resolver.nameservers[0]))
-                digcli.append(";; WHEN: {}\n".format(time.ctime()))
-
-                for i in response:
-                    #prepare Action list
-                    actions = [
-                    Action("clip","Copy {}".format(i), lambda: setClipboardText(str(i))),
-                    Action("clip","Copy all dig output +short", lambda: setClipboardText(str(''.join(digclishort)))),
-                    Action("clip","Copy all dig output", lambda: setClipboardText(str(''.join(digcli)))),
-                    ]
+            if answers:
+                for answer in answers:
+                    item_actions = [Action("clip-answer", f"Copy {answer}", lambda ans=answer: setClipboardText(str(ans)))] + actions
                     if qtype == 'PTR':
-                        actions.extend([Action("clip","Copy {}".format(qname), lambda: setClipboardText(str(qname)))])
+                         item_actions.insert(1, Action("clip-qname", f"Copy {qname}", lambda qn=qname: setClipboardText(str(qn))))
+                    
+                    icon_file = self.icon_path / f"{qtype.lower()}.svg"
+                    if not icon_file.exists():
+                        icon_file = self.icon_path / "a.svg" # Fallback icon
 
-                    #append a an item for each result             
-                    query.add(StandardItem(id=md_id,
-                        iconUrls = [os.path.dirname(__file__)+"/ico/"+qtype.lower()+".svg"],
-                        text = str(i),  
-                        subtext = "dig {0} {1} ".format(qname,qtype),
-                        actions=actions
+                    items.append(StandardItem(
+                        id=md_name,
+                        text=str(answer),
+                        subtext=f"dig {qname} {qtype}",
+                        icon_factory=lambda file=icon_file: makeImageIcon(str(file)),
+                        actions=item_actions
                     ))
             else:
-                #output for nxdomain etc...
-                digcli.append("{}\t\tIN\t{}\t\n".format(qname,qtype))
-                digclishort.append("<nothing>")
-                digcli.append("\n;; Query time: {} msec\n".format(round(time.time() - start_time,2)))
-                digcli.append(";; SERVER: {}#53\n".format(resolver.nameservers[0]))
-
-                digcli.append(";; WHEN: {}\n".format(time.ctime()))
-                query.add(StandardItem(
-                    iconUrls = [os.path.dirname(__file__)+"/ico/error.svg"],
-                    text = str(error),  
-                    subtext = "dig {0} {1} ".format(qname,qtype),
-                    actions = [
-                        Action("clip","{}".format(error), lambda: setClipboardText(str(error))),
-                            Action("clip","Copy dig output +short", lambda: setClipboardText(str(''.join(digclishort)))),
-                            Action("clip","Copy dig output", lambda: setClipboardText(str(''.join(digcli)))),
-                        ]
+                items.append(StandardItem(
+                    id=md_name,
+                    text=error,
+                    subtext=f"dig {qname} {qtype}",
+                    icon_factory=lambda: makeImageIcon(str(self.icon_path / "error.svg")),
+                    actions=actions
                 ))
+        query.add(items)
