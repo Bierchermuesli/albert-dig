@@ -7,6 +7,8 @@ Synopsis: <trigger> {domain|ip addr} [TXT|AAAA|ANY...] [@1.2.3.4.]"""
 from albert import *
 from pathlib import Path
 from dns.resolver import NXDOMAIN, NoAnswer, Resolver, Timeout, NoNameservers
+import dns.exception
+import dns.name
 import dns.reversename
 import ipaddress
 import time
@@ -93,6 +95,7 @@ class Plugin(PluginInstance, GeneratorQueryHandler):
             conf = self.readConfig(key, type)
             if conf is None:
                 self.writeConfig(key, default)
+                setattr(self, f"_{key}", default)
             else:
                 setattr(self, f"_{key}", conf)
 
@@ -164,6 +167,15 @@ class Plugin(PluginInstance, GeneratorQueryHandler):
         
         return qname, qtype_arg, resolver_addr
 
+    def _is_valid_domain(self, qname: str) -> bool:
+        """Validates a domain string. Requires at least 2 labels with a TLD of >= 2 chars."""
+        try:
+            name = dns.name.from_text(qname)
+        except dns.exception.SyntaxError:
+            return False
+        labels = [l for l in name.labels if l]
+        return len(labels) >= 2 and len(labels[-1]) >= 2
+
     def _build_qtype_list(self, qname: str, qtype_arg: str):
         """Determines the list of query types based on the arguments."""
         if not qname:
@@ -172,14 +184,14 @@ class Plugin(PluginInstance, GeneratorQueryHandler):
         if is_ip(qname):
             return ["PTR"]
 
-        if len(qname.split(".")) in range(1, 6) and qname.split('.')[-1].isalpha() and len(qname.split('.')[-1]) >= 2:
+        if self._is_valid_domain(qname):
             if not qtype_arg:
                 return [qt.strip() for qt in self.default_qtypes.split(',') if qt.strip()]
             if qtype_arg == "ANY":
                 return [qt.strip() for qt in self.any_qtypes.split(',') if qt.strip()]
             if qtype_arg in VALID_QTYPES:
                 return [qtype_arg]
-        
+
         return [] # Return empty list for invalid qname patterns
 
     def _run_query(self, qname: str, qtype: str, resolver: Resolver):
@@ -203,34 +215,37 @@ class Plugin(PluginInstance, GeneratorQueryHandler):
             
         query_time = round((time.time() - start_time) * 1000)
         server = resolver.nameservers[0] if resolver.nameservers else "N/A"
-        
-        dig_header = [
+
+        dig_full_lines = [
+            f"$> dig {qname} {qtype}",
+            "",
             f"; <<>> Albert-DIG {md_version} <<>> {qname}",
             f";; ->>HEADER<<- opcode: QUERY, status: {error}",
-            f";; flags: qr rd ra; QUERY: 1, ANSWER: {len(answers)}, AUTHORITY: 0, ADDITIONAL: 0\n",
-            f";; QUESTION SECTION:\n;{qname}.\t\tIN\t{qtype}\n"
+            f";; flags: qr rd ra; QUERY: 1, ANSWER: {len(answers)}, AUTHORITY: 0, ADDITIONAL: 0",
+            "",
+            ";; QUESTION SECTION:",
+            f";{qname}.\t\tIN\t{qtype}",
+            "",
+            ";; ANSWER SECTION:",
         ]
-        
-        dig_short = [f"\n$> dig {qname} {qtype} +short\n"]
-        dig_full = [f"\n$> dig {qname} {qtype}\n"] + dig_header
-        dig_full.append(";; ANSWER SECTION:")
+        dig_short_lines = [f"$> dig {qname} {qtype} +short", ""]
 
         if answers:
             for answer in answers:
-                dig_full.append(f"{qname}.\t\tIN\t{qtype}\t{answer}")
-                dig_short.append(str(answer))
+                dig_full_lines.append(f"{qname}.\t\tIN\t{qtype}\t{answer}")
+                dig_short_lines.append(str(answer))
         else:
-            dig_full.append(f";{qname}.\t\tIN\t{qtype}")
-            dig_short.append("<nothing>")
+            dig_full_lines.append(f";{qname}.\t\tIN\t{qtype}")
+            dig_short_lines.append("<nothing>")
 
-        dig_footer = [
-            f"\n;; Query time: {query_time} msec",
+        dig_full_lines.extend([
+            "",
+            f";; Query time: {query_time} msec",
             f";; SERVER: {server}#53",
-            f";; WHEN: {time.ctime()}"
-        ]
-        dig_full.extend(dig_footer)
+            f";; WHEN: {time.ctime()}",
+        ])
 
-        return answers, error, "".join(dig_full), "".join(dig_short)
+        return answers, error, "\n".join(dig_full_lines), "\n".join(dig_short_lines)
 
     def items(self, ctx):
         qname, qtype_arg, resolver_addr = self._parse_query(ctx.query)
@@ -242,8 +257,8 @@ class Plugin(PluginInstance, GeneratorQueryHandler):
         if not qtype_list:
             # Handle cases where build_qtype_list returns empty (invalid domain)
             if not is_ip(qname): # Avoid showing this for IPs that are being reversed
-                 yield [StandardItem(
-                    id=md_name,
+                yield [StandardItem(
+                    id=f"dig-invalid-{qname}",
                     icon_factory=lambda: Icon.image(self.icon_path / "error.svg"),
                     text="Invalid query",
                     subtext=f"'{qname}' is not a valid domain or IP address."
@@ -260,38 +275,41 @@ class Plugin(PluginInstance, GeneratorQueryHandler):
         if "PTR" in qtype_list:
             qname = dns.reversename.from_address(qname)
 
-        items = []
         for qtype in qtype_list:
+            if not ctx.isValid:
+                return
+
             answers, error, dig_full, dig_short = self._run_query(qname, qtype, resolver)
-            
+
             actions = [
                 Action("clip-short", "Copy dig output (+short)", lambda short=dig_short: setClipboardText(short)),
                 Action("clip-full", "Copy full dig output", lambda full=dig_full: setClipboardText(full)),
             ]
-            
+
+            batch = []
             if answers:
                 for answer in answers:
                     item_actions = [Action("clip-answer", f"Copy {answer}", lambda ans=answer: setClipboardText(str(ans)))] + actions
                     if qtype == 'PTR':
-                         item_actions.insert(1, Action("clip-qname", f"Copy {qname}", lambda qn=qname: setClipboardText(str(qn))))
-                    
+                        item_actions.insert(1, Action("clip-qname", f"Copy {qname}", lambda qn=qname: setClipboardText(str(qn))))
+
                     icon_file = self.icon_path / f"{qtype.lower()}.svg"
                     if not icon_file.exists():
                         icon_file = self.icon_path / "a.svg" # Fallback icon
 
-                    items.append(StandardItem(
-                        id=md_name,
+                    batch.append(StandardItem(
+                        id=f"dig-{qname}-{qtype}-{answer}",
                         text=str(answer),
                         subtext=f"dig {qname} {qtype}",
                         icon_factory=lambda file=icon_file: Icon.image(file),
                         actions=item_actions
                     ))
             else:
-                items.append(StandardItem(
-                    id=md_name,
+                batch.append(StandardItem(
+                    id=f"dig-{qname}-{qtype}-{error}",
                     text=error,
                     subtext=f"dig {qname} {qtype}",
                     icon_factory=lambda: Icon.image(self.icon_path / "error.svg"),
                     actions=actions
                 ))
-        yield items
+            yield batch
